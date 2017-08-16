@@ -279,6 +279,7 @@ import time
 from ansible.module_utils.basic import AnsibleModule
 from ansible.module_utils._text import to_native
 from ansible.module_utils.vmware import get_all_objs, connect_to_api, gather_vm_facts
+from random import randint
 
 try:
     import json
@@ -342,7 +343,9 @@ class PyVmomiDeviceHelper(object):
         diskspec.device.backing = vim.vm.device.VirtualDisk.FlatVer2BackingInfo()
         diskspec.device.backing.diskMode = 'persistent'
         diskspec.device.controllerKey = scsi_ctl.device.key
-
+        #It's important to assign a temporary key. 
+        #Otherwise, there are errors when disks are created on different datastore 
+        diskspec.device.key = randint(-2099,-2000)
         assert self.next_disk_unit_number != 7
         assert disk_index != 7
         """
@@ -860,6 +863,8 @@ class PyVmomiHelper(object):
             msg="No size, size_kb, size_mb, size_gb or size_tb attribute found into disk configuration")
 
     def configure_disks(self, vm_obj):
+        #Dict for storing indexes of the vmdk
+        datastore_index= dict()
         # Ignore empty disk list, this permits to keep disks when deploying a template/cloning a VM
         if len(self.params['disk']) == 0:
             return
@@ -899,10 +904,24 @@ class PyVmomiHelper(object):
 
             # which datastore?
             if expected_disk_spec.get('datastore'):
-                # TODO: This is already handled by the relocation spec,
-                # but it needs to eventually be handled for all the
-                # other disks defined
-                pass
+                datastore_name = expected_disk_spec.get('datastore')
+                datastore_name_vmx = self.params.get('disk')[0].get('datastore')
+                # Precise the vmdk filename only if the disk is stored on a different datastore than the vmx
+                if disk_index > 0 and datastore_name != datastore_name_vmx:
+                    datastore = get_obj(self.content, [vim.Datastore], datastore_name)
+                    if datastore:
+                        datastore_path = '[' + datastore_name + ']/' + self.params["name"]
+                        diskspec.device.backing.datastore=datastore
+                        #Choose a unique vmdk name by datastore
+                        if  datastore_index.get(datastore_name) is None:
+                            diskspec.device.backing.fileName = datastore_path + '/' + self.params['name']+ '.vmdk'
+                            datastore_index[datastore_name]=1
+                        else:
+                            index = datastore_index[datastore_name]
+                            diskspec.device.backing.fileName = datastore_path + '/' + self.params['name']+ '_'+ str(index)  + '.vmdk'
+                            index +=1
+                            datastore_index[datastore_name]=index
+
 
             # increment index for next disk search
             disk_index += 1
